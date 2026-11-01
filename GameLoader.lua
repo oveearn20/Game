@@ -1,7 +1,7 @@
 --[[
     JUST HUB — GameLoader (script 2)
     - Called by the key script after the key is validated
-    - Detects the game by GameId and loads that game's script
+    - Detects the game by GameId OR PlaceId and loads that game's script
     - To add a game: add ONE line in the GAMES table below
 ]]
 
@@ -11,39 +11,27 @@ end
 
 local LS = loadstring or load
 
--- ═══════════════════════════════════════════════════════════
--- CONFIG
--- ═══════════════════════════════════════════════════════════
-
--- โฟลเดอร์เก็บสคริปต์เกมในรีโปนี้ (ใส่แค่ชื่อไฟล์ก็พอ)
 local BASE = "https://raw.githubusercontent.com/oveearn20/Game/main/Games/"
 
--- helper: ชื่อไฟล์ -> ลิงก์เต็ม
 local function G(file)
     return BASE .. file
 end
 
--- ═══════════════════════════════════════════════════════════
--- GAME LIST  (เพิ่มเกมใหม่ตรงนี้ที่เดียว)
--- รูปแบบ: ["GameId"] = { ลิงก์หลัก, ลิงก์สำรอง (ไม่ใส่ก็ได้) }
--- ═══════════════════════════════════════════════════════════
-
 local GAMES = {
 
-    -- Sometown
+    -- Sometown (GameId)
     ["8835283017"] = {
         "https://raw.githubusercontent.com/oveearn20/Sometown/main/Sometown",
     },
 
-    -- ตัวอย่างเกมใหม่ (ลบ -- ข้างหน้าแล้วแก้เลข/ชื่อไฟล์)
-    -- ["1111111111"] = { G("GameB.lua") },
-    -- ["2222222222"] = { G("GameC.lua"), "https://ลิงก์สำรอง/GameC.lua" },
-    -- ["3333333333"] = { G("GameD.lua") },
-}
+    -- Hunting Together (PlaceId)
+    ["117483759937632"] = {
+        "https://raw.githubusercontent.com/oveearn20/Hunting/main/Hunting",
+    },
 
--- ═══════════════════════════════════════════════════════════
--- HTTP
--- ═══════════════════════════════════════════════════════════
+    -- ["1111111111"] = { G("GameB.lua") },
+    -- ["2222222222"] = { G("GameC.lua"), "https://backup/GameC.lua" },
+}
 
 local function httpGet(url)
     local methods = {
@@ -75,18 +63,23 @@ local function isValidLua(src)
     return true
 end
 
--- ═══════════════════════════════════════════════════════════
--- LOAD
--- ═══════════════════════════════════════════════════════════
-
 local gid = tostring(game.GameId)
-print(">>> [GAMELOADER] GameId =", gid, "| PlaceId =", tostring(game.PlaceId))
+local pid = tostring(game.PlaceId)
+print(">>> [GAMELOADER] GameId =", gid, "| PlaceId =", pid)
 
 local urls = GAMES[gid]
+local matchedBy = "GameId"
 if not urls then
-    warn(">>> [GAMELOADER] UNSUPPORTED GameId:", gid)
+    urls = GAMES[pid]
+    matchedBy = "PlaceId"
+end
+
+if not urls then
+    warn(">>> [GAMELOADER] UNSUPPORTED GameId:", gid, "| PlaceId:", pid)
     return false, "UNSUPPORTED"
 end
+print(">>> [GAMELOADER] matched by", matchedBy)
+
 if type(urls) == "string" then urls = { urls } end
 
 local lastReason = "HTTP_FAIL"
