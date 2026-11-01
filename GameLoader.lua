@@ -1,24 +1,18 @@
 --[[
-    JUST HUB — GameLoader (script 2)
-    - Called by the key script after the key is validated
-    - Detects the game by GameId OR PlaceId and loads that game's script
-    - To add a game: add ONE line in the GAMES table below
+    JUST HUB — GameLoader (script 2) — fast version
+    - Phase 1 (PREFETCH): called before key check, downloads the game script in the background
+    - Phase 2 (LOAD): called after key is valid, runs the cached script instantly
+    - Matches by GameId OR PlaceId
 ]]
 
-if not _G.JustHubAuth then
-    return false, "RUNTIME"
-end
-
 local LS = loadstring or load
+_G.JustHubCache = _G.JustHubCache or {}
 
+-- ═══════════════ CONFIG ═══════════════
 local BASE = "https://raw.githubusercontent.com/oveearn20/Game/main/Games/"
-
-local function G(file)
-    return BASE .. file
-end
+local function G(file) return BASE .. file end
 
 local GAMES = {
-
     -- Sometown (GameId)
     ["8835283017"] = {
         "https://raw.githubusercontent.com/oveearn20/Sometown/main/Sometown",
@@ -30,9 +24,9 @@ local GAMES = {
     },
 
     -- ["1111111111"] = { G("GameB.lua") },
-    -- ["2222222222"] = { G("GameC.lua"), "https://backup/GameC.lua" },
 }
 
+-- ═══════════════ HTTP ═══════════════
 local function httpGet(url)
     local methods = {
         function() return game:HttpGet(url, true) end,
@@ -46,9 +40,7 @@ local function httpGet(url)
     }
     for _, m in ipairs(methods) do
         local ok, res = pcall(m)
-        if ok and type(res) == "string" and #res > 0 then
-            return res
-        end
+        if ok and type(res) == "string" and #res > 0 then return res end
     end
     return nil
 end
@@ -63,40 +55,67 @@ local function isValidLua(src)
     return true
 end
 
+local function fetchCached(url)
+    local c = _G.JustHubCache[url]
+    if c and isValidLua(c) then return c end
+    local src = httpGet(url)
+    if src and isValidLua(src) then
+        _G.JustHubCache[url] = src
+        return src
+    end
+    return nil
+end
+
+-- ═══════════════ FIND GAME ═══════════════
 local gid = tostring(game.GameId)
 local pid = tostring(game.PlaceId)
+local urls = GAMES[gid] or GAMES[pid]
+if type(urls) == "string" then urls = { urls } end
+
+-- ═══════════════ PHASE 1: PREFETCH ═══════════════
+-- Use from the key script (before key check):
+--   _G.JustHubPrefetchMode = true
+--   task.spawn(function() loadstring(game:HttpGet("GAMELOADER_URL"))() end)
+if _G.JustHubPrefetchMode and not _G.JustHubAuth then
+    _G.JustHubPrefetchMode = nil
+    if urls then
+        for _, url in ipairs(urls) do
+            if fetchCached(url) then break end
+        end
+        print(">>> [GAMELOADER] prefetched")
+    end
+    return true
+end
+
+-- ═══════════════ PHASE 2: LOAD ═══════════════
+if not _G.JustHubAuth then
+    return false, "RUNTIME"
+end
+
 print(">>> [GAMELOADER] GameId =", gid, "| PlaceId =", pid)
 
-local urls = GAMES[gid]
-local matchedBy = "GameId"
 if not urls then
-    urls = GAMES[pid]
-    matchedBy = "PlaceId"
-end
-
-if not urls then
-    warn(">>> [GAMELOADER] UNSUPPORTED GameId:", gid, "| PlaceId:", pid)
+    warn(">>> [GAMELOADER] UNSUPPORTED:", gid, pid)
     return false, "UNSUPPORTED"
 end
-print(">>> [GAMELOADER] matched by", matchedBy)
-
-if type(urls) == "string" then urls = { urls } end
 
 local lastReason = "HTTP_FAIL"
 
 for i, url in ipairs(urls) do
-    print(">>> [GAMELOADER] try #" .. i, url)
-    local src = httpGet(url)
+    local t0 = os.clock()
+    local src = fetchCached(url)
+    print(">>> [GAMELOADER] get #" .. i, string.format("%.2fs", os.clock() - t0))
 
-    if src and isValidLua(src) then
+    if src then
         local fn, err = LS(src)
         if not fn then
             warn(">>> [GAMELOADER] SYNTAX:", tostring(err))
             lastReason = "SYNTAX"
         else
+            local t1 = os.clock()
             local ok, runErr = pcall(fn)
             if ok then
-                print(">>> [GAMELOADER] GAME SCRIPT EXECUTED")
+                print(">>> [GAMELOADER] EXECUTED", string.format("%.2fs", os.clock() - t1))
                 return true
             end
             warn(">>> [GAMELOADER] RUNTIME:", tostring(runErr))
@@ -105,8 +124,6 @@ for i, url in ipairs(urls) do
     else
         lastReason = "HTTP_FAIL"
     end
-
-    if i < #urls then task.wait(0.3) end
 end
 
 warn(">>> [GAMELOADER] All failed:", lastReason)
