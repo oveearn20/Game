@@ -3194,7 +3194,9 @@ RG.driveToPhys = function(real, tok, wps, speed, opts)
     end)
     halfL = math.clamp(halfL, 3, 14)
     local human = R.human ~= false
-    local ghostAll = R.noclip ~= false and opts.noclip ~= false   -- noclip ตลอดการขับ (ทะลุตึก/รั้ว/รถคนอื่น ไปไว ไม่ชน) คืนการชนตอนถึง
+    -- R.noclip: true = noclip ตลอดการขับ | "crash" = ขับปกติ หลบกำแพงเอง ชนจริงค่อย noclip ชั่วคราว | false = ไม่ noclip
+    local ghostAll = R.noclip == true and opts.noclip ~= false
+    local crashMode = R.noclip == "crash" and opts.noclip ~= false
     local okP, pc = pcall(RG.pilot.new, {
         wps = poly, top = topSpeed, passR = math.max(R.pass, topSpeed * 0.35),
         decel = R.decel, lat = R.lat, accel = R.accel, arrive = ARRIVE,
@@ -3209,7 +3211,7 @@ RG.driveToPhys = function(real, tok, wps, speed, opts)
         return false
     end
     print(string.format("[Pilot] เริ่ม: จุด=%d ยาว=%.0f ครึ่งกว้างรถ=%.1f ทางลัด=%s หลบ=%s noclip=%s Spherecast=%s",
-        nW, L, halfW, tostring(pc.shortcut), tostring(pc.avoid), tostring(ghostAll), tostring(pc.sphere)))
+        nW, L, halfW, tostring(pc.shortcut), tostring(pc.avoid), ghostAll and "ตลอด" or (crashMode and "ตอนชน" or "ปิด"), tostring(pc.sphere)))
 
     -- noclip ตอนขับ: รถทั้งคัน + ตัวละคร ย้ำทุก 0.15 วิ (Humanoid ชอบเปิดการชนคืนเอง) แบบ driveTo ตัวเก่า
     local ncConn, ncLast, ncBeat = nil, 0, os.clock()
@@ -3221,15 +3223,42 @@ RG.driveToPhys = function(real, tok, wps, speed, opts)
             end
         end
     end
-    if ghostAll then
-        ghostOn()
+    local crashUntil, crashT, lastCmd = 0, 0, 0   -- noclip ตอนชน: หมดเวลาเมื่อไหร่ / ชนมานานเท่าไหร่ / ความเร็วที่สั่งเฟรมก่อน
+    if ghostAll then ghostOn() end
+    if ghostAll or crashMode then
         ncConn = RunService.Stepped:Connect(function()
             local t = os.clock()
             if t - ncBeat > 1 or not root.Parent then ncConn:Disconnect(); return end   -- ลูปขับหยุด = เลิก noclip เอง
+            if not (ghostAll or t < crashUntil) then return end
             if t - ncLast < 0.15 then return end
             ncLast = t
             pcall(ghostOn)
         end)
+    end
+    -- รถยังซ้อนอยู่ในของแข็งไหม (ก่อนคืนการชน กันรถกระเด็น)
+    local ovP
+    pcall(function()
+        ovP = OverlapParams.new()
+        ovP.FilterType = Enum.RaycastFilterType.Exclude
+        ovP.FilterDescendantsInstances = {char, carModel or root}
+        ovP.RespectCanCollide = true
+    end)
+    local function overlapping()
+        if not ovP then return false end
+        local okO, hit = pcall(function()
+            local cf = (seat and seat.Parent) and seat.CFrame or root.CFrame
+            local parts = workspace:GetPartBoundsInBox(cf, Vector3.new(halfW * 2, 4, halfL * 2), ovP)
+            for _, pt in ipairs(parts) do
+                if not pt:IsA("Terrain") then return true end
+            end
+            return false
+        end)
+        return okO and hit
+    end
+    local function crashOff()
+        crashUntil = 0
+        setNC(root, false)
+        pc.walls, pc.gndHigh, pc.gc, pc.gn = true, true, {}, 0
     end
     -- กันตกทะลุพื้น (รถ noclip): ร่วงเร็ว + มีพื้นอยู่เหนือท้องรถ -> ยกรถขึ้นวางบนพื้น
     local fallRP = RaycastParams.new()
@@ -3259,14 +3288,16 @@ RG.driveToPhys = function(real, tok, wps, speed, opts)
         RG.activeAt = now
         ncBeat = now
         -- ถึงจุดผ่านแล้ว (ช่วงสุดท้ายเข้าเป้า): ปิด noclip กลับมาชนปกติ + หลบกำแพง (ไม่ทะลุกำแพงเข้าเป้า)
-        if ghostAll and opts.solidFrom and pc.seg >= opts.solidFrom then
+        if (ghostAll or crashMode) and opts.solidFrom and pc.seg >= opts.solidFrom then
+            crashMode = false
+            if crashUntil > 0 then crashOff() end
             ghostAll = false
             if ncConn then ncConn:Disconnect(); ncConn = nil end
             setNC(root, false)
             pc.walls, pc.gndHigh, pc.gc, pc.gn = true, true, {}, 0
             setStatus("🧱 ถึงจุดผ่าน → ปิด noclip ขับเข้าเป้า")
         end
-        if ghostAll and now - lastFallFix > 0.5 and root.AssemblyLinearVelocity.Y < -35 then
+        if (ghostAll or crashUntil > 0) and now - lastFallFix > 0.5 and root.AssemblyLinearVelocity.Y < -35 then
             local p0 = root.Position
             local hit = workspace:Raycast(p0 + Vector3.new(0, 150, 0), Vector3.new(0, -400, 0), fallRP)
             if hit and hit.Position.Y > p0.Y - below + 2 then
@@ -3315,6 +3346,24 @@ RG.driveToPhys = function(real, tok, wps, speed, opts)
         end
         pc.ghost = ghosting and not ghostAll
 
+        -- ชนกำแพง: สั่งวิ่ง > 25 แต่ความเร็วจริงตกเหลือ < 40% นาน 0.1 วิ -> noclip 2 วิ (ไม่ทำช่วงจอด 30 studs สุดท้าย)
+        if crashMode and now >= revUntil then
+            local vNow = root.AssemblyLinearVelocity
+            local hvNow = Vector3.new(vNow.X, 0, vNow.Z).Magnitude
+            if lastCmd > 25 and hvNow < lastCmd * 0.4 and not pc.info.final then crashT = crashT + dt else crashT = 0 end
+            if crashT > 0.1 and crashUntil == 0 then
+                crashUntil, crashT = now + 2.0, 0
+                pcall(ghostOn)
+                pc.walls, pc.gndHigh, pc.gc, pc.gn = false, false, {}, 0   -- ระหว่าง noclip ไม่เบรกเพราะกำแพง ทะลุไปเลย
+                pc.curV = math.max(pc.curV, lastCmd * 0.6)
+                setStatus("💥 ชน → noclip ชั่วคราว")
+            end
+        end
+        if crashUntil > 0 and now >= crashUntil then
+            if overlapping() then crashUntil = now + 0.5 else crashOff() end   -- ยังซ้อนในของ: noclip ต่อจนพ้น
+        end
+        local ghostNow = ghostAll or crashUntil > 0
+
         if root.CFrame.UpVector.Y < 0.2 and now - lastFlip > 3 then   -- รถพลิกคว่ำ: ตั้งกลับ (จำกัด 3 วิ/ครั้ง)
             lastFlip = now
             root.CFrame = CFrame.new(p + Vector3.new(0, 4, 0)) * (CFrame.lookAt(Vector3.zero, dir).Rotation * relRot)
@@ -3329,6 +3378,7 @@ RG.driveToPhys = function(real, tok, wps, speed, opts)
             local av = root.AssemblyAngularVelocity
             if now < revUntil then   -- ถอยหลังตรงๆ
                 pc.curV = 8
+                lastCmd = 0
                 root.AssemblyLinearVelocity = Vector3.new(-fwd.X * 18, vel.Y, -fwd.Z * 18)
                 root.AssemblyAngularVelocity = Vector3.new(av.X, 0, av.Z)
             else
@@ -3349,7 +3399,7 @@ RG.driveToPhys = function(real, tok, wps, speed, opts)
                         wps and string.format(" ตามเส้น %d→%d/%d", info.seg, info.aim, nW) or "ตรง", tag, spd, info.dF))
                 end
                 local angX, angZ, vy = av.X, av.Z, vel.Y
-                if ghostAll then   -- noclip: รถไม่ชนพื้น ต้องคุมเอง ไม่ให้หัว/ท้ายจมดิน
+                if ghostNow then   -- noclip: รถไม่ชนพื้น ต้องคุมเอง ไม่ให้หัว/ท้ายจมดิน
                     local okG, gx, gz, gvy, lift = pcall(RG.groundFollow, root, seat, halfL, halfW, below, fallRP, vel)
                     if okG and gx then
                         angX, angZ = gx, gz
@@ -3362,12 +3412,13 @@ RG.driveToPhys = function(real, tok, wps, speed, opts)
                 end
                 root.AssemblyLinearVelocity = Vector3.new(fwd.X * spd, vy, fwd.Z * spd)
                 root.AssemblyAngularVelocity = Vector3.new(angX, yaw, angZ)
+                lastCmd = spd
             end
         end
     end
 
     if ncConn then ncConn:Disconnect() end
-    if ghosting or ghostAll then setNC(root, false) end   -- ถึง/หยุดขับ: คืนการชนรถ+ตัวละคร (noclip เฉพาะตอนขับ)
+    if ghosting or ghostAll or crashUntil > 0 then setNC(root, false) end   -- ถึง/หยุดขับ: คืนการชนรถ+ตัวละคร (noclip เฉพาะตอนขับ)
     -- หมดเวลาแต่ยังห่างเป้าเกิน ARRIVE+60 = ไม่ถือว่าถึง (ไม่ทิ้งรถไกลจุดฟาม)
     if timedOut and not lost and ok and flatDist(root.Position, real) > ARRIVE + 60 then ok = false end
     -- ถึงแล้ว: ปล่อยให้ค่อยๆ เบาลงจนนิ่ง ก่อนล็อก (ไม่ตัดความเร็วเป็น 0 ทันที)
@@ -3394,7 +3445,7 @@ RG.driveToPhys = function(real, tok, wps, speed, opts)
     end
     -- รถหายตอนใกล้เป้า (ขับเข้าจุดฟามแล้วเกมเก็บรถให้เอง) = ถึงแล้ว ไม่ใช่ล้มเหลว
     if lost and ok and flatDist(lastP, real) <= 40 then
-        if ghostAll or ghosting then pcall(setNC, root, false) end
+        if ghostAll or ghosting or crashUntil > 0 then pcall(setNC, root, false) end
         pcall(RG.release, rig)
         setStatus("🅿️ ขับเข้าจุดแล้ว เกมเก็บรถให้")
         return true, nil, false
@@ -3469,7 +3520,7 @@ RG.ROUTE = {
     shortcut = true,   -- ตัดทางลัด: เล็งจุดไกลสุดบนเส้นที่ขับตรงไปได้จริง (พื้นต่อเนื่อง ไม่ใช่น้ำ ไม่ชัน ไม่มีกำแพง)
     avoid    = true,   -- ตรวจข้างหน้า: เจอกำแพง/น้ำ/หน้าผา/พื้นหาย → เลียบหลบ + เบรกก่อนชน, ติดจริง → ถอยหลังแล้วหาทางใหม่
     look     = 450,    -- มองหาทางลัดไกลสุด (studs)
-    noclip   = true,   -- noclip ตอนขับรถเท่านั้น (รถ+ตัวละคร ทะลุตึก/รั้ว/รถคน ไปไว ไม่ชน) ถึงแล้วคืนการชน | ยังหลบน้ำ/หน้าผา/เขาชัน
+    noclip   = "crash", -- "crash" = ขับปกติ หลบกำแพงเอง ชนจริงค่อย noclip ชั่วคราว | true = noclip ตลอดการขับ | false = ไม่ noclip
     carToPoint = true, -- true = นั่งรถอยู่ → ขับรถเข้าจุดฟามจริงทุกรอบ ไม่ลงเดินจากระยะใกล้ (กันรถทิ้งไกลแล้วหาย)
     fallback = "drive", -- ถ้าอ่านเส้นแผนที่ไม่ได้: "drive" = ขับตรงไปเอง (นักบินหลบกำแพง/น้ำให้) | false = หยุดรอแสดงเหตุผล | "warp" = วาปเดิม
 }
