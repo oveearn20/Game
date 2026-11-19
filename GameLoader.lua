@@ -12,6 +12,7 @@ _G.JustHubCache = _G.JustHubCache or {}
 local BASE = "https://raw.githubusercontent.com/oveearn20/Game/main/Games/"
 local function G(file) return BASE .. file end
 local TYPER_TOWN = "https://raw.githubusercontent.com/oveearn20/Game/main/Typer%20town"
+local ANIME_DICE = "https://raw.githubusercontent.com/oveearn20/Game/main/Anime%20dice"
 
 local GAMES = {
     -- Sometown (GameId)
@@ -28,6 +29,10 @@ local GAMES = {
     -- ถ้ารู้ GameId แล้ว ใส่เพิ่มแบบ ["GameId"] = { TYPER_TOWN } จะจับได้ทุกแมพในเกมนี้
     ["119554426329370"] = { TYPER_TOWN },
     ["73746968849439"]  = { TYPER_TOWN },
+
+    -- Anime Dice: GameId (จับได้ทุกเซิร์ฟ/ทุกแมพของเกม) + PlaceId หลัก (สำรอง)
+    ["10708913337"]     = { ANIME_DICE },
+    ["113290951185459"] = { ANIME_DICE },
 
     -- ["1111111111"] = { G("GameB.lua") },
 }
