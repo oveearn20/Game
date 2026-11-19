@@ -11,6 +11,7 @@ _G.JustHubCache = _G.JustHubCache or {}
 -- ═══════════════ CONFIG ═══════════════
 local BASE = "https://raw.githubusercontent.com/oveearn20/Game/main/Games/"
 local function G(file) return BASE .. file end
+local TYPER_TOWN = "https://raw.githubusercontent.com/oveearn20/Game/main/Typer%20town"
 
 local GAMES = {
     -- Sometown (GameId)
@@ -22,6 +23,11 @@ local GAMES = {
     ["117483759937632"] = {
         "https://raw.githubusercontent.com/oveearn20/Hunting/main/Hunting",
     },
+
+    -- Typer town: แมพ (PlaceId) + ล็อบบี้ (PlaceId, ให้ระบบย้ายเซิร์ฟเลือกเซิร์ฟเองตอนอยู่ล็อบบี้)
+    -- ถ้ารู้ GameId แล้ว ใส่เพิ่มแบบ ["GameId"] = { TYPER_TOWN } จะจับได้ทุกแมพในเกมนี้
+    ["119554426329370"] = { TYPER_TOWN },
+    ["73746968849439"]  = { TYPER_TOWN },
 
     -- ["1111111111"] = { G("GameB.lua") },
 }
