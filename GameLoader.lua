@@ -1,21 +1,9 @@
---[[
-    JUST HUB — GameLoader (script 2) — SECURE + ENCRYPTED MAPS
-    - รับ session (key + decKey) จากไฟล์ key ผ่าน getgenv().JustHubSession
-    - validate key ซ้ำกับ PandaAuth (กัน bypass แบบตั้ง global เอง)
-    - โหลดแมพตาม GameId/PlaceId แล้วถอดรหัส (XOR+Base64) ด้วย decKey
-    - PREFETCH: โหลด blob ล่วงหน้าได้ (blob เข้ารหัสอยู่แล้ว ปลอดภัย)
-]]
-
 local LS = loadstring or load
 _G.JustHubCache = _G.JustHubCache or {}
 
--- ═══════════════ CONFIG ═══════════════
--- TEST_MODE = true  -> ถ้าแมพยังเป็น Lua ธรรมดา (ยังไม่เข้ารหัส) ก็รันได้ (ไว้เทส)
--- TEST_MODE = false -> บังคับถอดรหัสเสมอ (ใช้ตอนปล่อยจริง หลังเข้ารหัสแมพแล้ว)
-local TEST_MODE   = true
-
--- REQUIRE_KEY = true -> บังคับ validate key กับ PandaAuth (กัน bypass) — อย่าปิดตอนจริง
-local REQUIRE_KEY = true
+local REQUIRE_KEY = true      -- validate key กับ PandaAuth (กัน bypass)
+local ANTI_HOOK   = true      -- เจอ hook/dumper = เตะออกจากเกมทันที
+local TEST_MODE   = true      -- ยอมรับแมพที่ยังเป็น Lua ธรรมดา (ตอน migrate)
 local SERVICE_ID  = "justhubkey"
 
 local BASE = "https://raw.githubusercontent.com/oveearn20/Game/main/Games/"
@@ -24,32 +12,163 @@ local TYPER_TOWN = "https://raw.githubusercontent.com/oveearn20/Game/main/Typer%
 local ANIME_DICE = "https://raw.githubusercontent.com/oveearn20/Game/main/Anime%20dice"
 
 local GAMES = {
-    -- Sometown (GameId)
-    ["8835283017"] = {
-        "https://raw.githubusercontent.com/oveearn20/Sometown/main/Sometown",
-    },
-
-    -- Hunting Together (PlaceId)
-    ["117483759937632"] = {
-        "https://raw.githubusercontent.com/oveearn20/Hunting/main/Hunting",
-    },
-
-    -- Typer town
+    ["8835283017"]      = { "https://raw.githubusercontent.com/oveearn20/Sometown/main/Sometown" },
+    ["117483759937632"] = { "https://raw.githubusercontent.com/oveearn20/Hunting/main/Hunting" },
     ["119554426329370"] = { TYPER_TOWN },
     ["73746968849439"]  = { TYPER_TOWN },
-
-    -- Anime Dice
     ["10708913337"]     = { ANIME_DICE },
     ["113290951185459"] = { ANIME_DICE },
-
-    -- ["1111111111"] = { G("GameB.lua") },
 }
 
--- ═══════════════ SESSION (จากไฟล์ key) ═══════════════
+-- AES-256-CTR decrypt (pure Luau) — matches server-side cryptography lib
+-- usage: local plain = AESDecrypt(base64blob, "Justreally095")
+local function AESDecrypt(b64, password)
+    local bxor, band, floor = bit32.bxor, bit32.band, math.floor
+    local SBOX = {99,124,119,123,242,107,111,197,48,1,103,43,254,215,171,118,202,130,201,125,250,89,71,240,173,212,162,175,156,164,114,192,183,253,147,38,54,63,247,204,52,165,229,241,113,216,49,21,4,199,35,195,24,150,5,154,7,18,128,226,235,39,178,117,9,131,44,26,27,110,90,160,82,59,214,179,41,227,47,132,83,209,0,237,32,252,177,91,106,203,190,57,74,76,88,207,208,239,170,251,67,77,51,133,69,249,2,127,80,60,159,168,81,163,64,143,146,157,56,245,188,182,218,33,16,255,243,210,205,12,19,236,95,151,68,23,196,167,126,61,100,93,25,115,96,129,79,220,34,42,144,136,70,238,184,20,222,94,11,219,224,50,58,10,73,6,36,92,194,211,172,98,145,149,228,121,231,200,55,109,141,213,78,169,108,86,244,234,101,122,174,8,186,120,37,46,28,166,180,198,232,221,116,31,75,189,139,138,112,62,181,102,72,3,246,14,97,53,87,185,134,193,29,158,225,248,152,17,105,217,142,148,155,30,135,233,206,85,40,223,140,161,137,13,191,230,66,104,65,153,45,15,176,84,187,22}
+    local RCON = {1,2,4,8,16,32,64,128,27,54,108,216,171,77}
+
+    -- base64 decode
+    local B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+    local function b64decode(data)
+        data = tostring(data):gsub('[^'..B64..'=]', '')
+        local out = (data:gsub('.', function(x)
+            if x == '=' then return '' end
+            local r, f = '', (B64:find(x) - 1)
+            for i = 6, 1, -1 do r = r .. (f % 2^i - f % 2^(i-1) > 0 and '1' or '0') end
+            return r
+        end):gsub('%d%d%d?%d?%d?%d?%d?%d?', function(x)
+            if #x ~= 8 then return '' end
+            local c = 0
+            for i = 1, 8 do c = c + (x:sub(i, i) == '1' and 2^(8 - i) or 0) end
+            return string.char(c)
+        end))
+        return out
+    end
+
+    -- derive 32-byte key
+    local key = password
+    while #key < 32 do key = key .. password end
+    key = key:sub(1, 32)
+    local kb = {}
+    for i = 1, 32 do kb[i] = key:byte(i) end
+
+    local function gmul(a, b)
+        local r = 0
+        for _ = 1, 8 do
+            if b % 2 == 1 then r = bxor(r, a) end
+            local hi = a >= 128
+            a = (a * 2) % 256
+            if hi then a = bxor(a, 0x1B) end
+            b = floor(b / 2)
+        end
+        return r
+    end
+
+    -- key expansion (Nk=8, Nr=14)
+    local Nk, Nr = 8, 14
+    local w = {}
+    for i = 1, Nk do
+        w[i] = { kb[4*(i-1)+1], kb[4*(i-1)+2], kb[4*(i-1)+3], kb[4*(i-1)+4] }
+    end
+    for p = Nk + 1, 4 * (Nr + 1) do
+        local t = { w[p-1][1], w[p-1][2], w[p-1][3], w[p-1][4] }
+        local m = (p - 1) % Nk
+        if m == 0 then
+            t = { t[2], t[3], t[4], t[1] }
+            for j = 1, 4 do t[j] = SBOX[t[j] + 1] end
+            t[1] = bxor(t[1], RCON[floor((p-1)/Nk)])
+        elseif m == 4 then
+            for j = 1, 4 do t[j] = SBOX[t[j] + 1] end
+        end
+        local a = w[p - Nk]
+        w[p] = { bxor(a[1],t[1]), bxor(a[2],t[2]), bxor(a[3],t[3]), bxor(a[4],t[4]) }
+    end
+    -- flatten round keys
+    local rk = {}
+    local idx = 1
+    for p = 1, 4 * (Nr + 1) do
+        for j = 1, 4 do rk[idx] = w[p][j]; idx = idx + 1 end
+    end
+
+    local function encBlock(inp)
+        local s = {}
+        for i = 1, 16 do s[i] = inp[i] end
+        -- addRoundKey 0
+        for i = 1, 16 do s[i] = bxor(s[i], rk[i]) end
+        for rnd = 1, Nr do
+            -- subBytes
+            for i = 1, 16 do s[i] = SBOX[s[i] + 1] end
+            -- shiftRows
+            local o = {}
+            for r = 0, 3 do
+                for c = 0, 3 do
+                    o[r + 4*c + 1] = s[r + 4*((c + r) % 4) + 1]
+                end
+            end
+            s = o
+            if rnd ~= Nr then
+                -- mixColumns
+                local m = {}
+                for c = 0, 3 do
+                    local b0,b1,b2,b3 = s[4*c+1], s[4*c+2], s[4*c+3], s[4*c+4]
+                    m[4*c+1] = bxor(bxor(gmul(b0,2), gmul(b1,3)), bxor(b2, b3))
+                    m[4*c+2] = bxor(bxor(b0, gmul(b1,2)), bxor(gmul(b2,3), b3))
+                    m[4*c+3] = bxor(bxor(b0, b1), bxor(gmul(b2,2), gmul(b3,3)))
+                    m[4*c+4] = bxor(bxor(gmul(b0,3), b1), bxor(b2, gmul(b3,2)))
+                end
+                s = m
+            end
+            -- addRoundKey rnd
+            local base = 16 * rnd
+            for i = 1, 16 do s[i] = bxor(s[i], rk[base + i]) end
+        end
+        return s
+    end
+
+    -- decode blob
+    local blob = b64decode(b64)
+    if #blob < 17 then return nil end
+    local iv = {}
+    for i = 1, 16 do iv[i] = blob:byte(i) end
+    local ctLen = #blob - 16
+
+    local function incCtr()
+        for j = 16, 1, -1 do
+            iv[j] = iv[j] + 1
+            if iv[j] == 256 then iv[j] = 0 else break end
+        end
+    end
+
+    local out = {}
+    local pos = 17
+    local n = 0
+    while n < ctLen do
+        local ks = encBlock(iv)
+        local chunk = math.min(16, ctLen - n)
+        for i = 1, chunk do
+            out[#out + 1] = string.char(bxor(blob:byte(pos + i - 1), ks[i]))
+        end
+        pos = pos + chunk
+        n = n + chunk
+        incCtr()
+    end
+    return table.concat(out)
+end
+
+
+
 local env     = (getgenv and getgenv()) or _G
 local session = env.JustHubSession
 
--- ═══════════════ HTTP ═══════════════
+local function kickOut(reason)
+    pcall(function()
+        local p = game:GetService("Players").LocalPlayer
+        p:Kick("\n[JUST HUB] Security: "..tostring(reason).."\nDetected tampering. Session closed.")
+    end)
+    -- freeze ไม่ให้โค้ดเดินต่อ (กันกรณี Kick ถูก hook)
+    while true do task.wait(1e9) end
+end
+
 local function httpGet(url)
     local methods = {
         function() return game:HttpGet(url, true) end,
@@ -68,7 +187,6 @@ local function httpGet(url)
     return nil
 end
 
--- blob ที่โหลดมาต้องไม่ใช่ HTML/404 (ใช้ได้ทั้ง Lua ธรรมดาและข้อความเข้ารหัส)
 local function isValidBlob(src)
     if not src or #src < 20 then return false end
     local t = src:gsub("^%s+", "")
@@ -90,66 +208,48 @@ local function fetchCached(url)
     return nil
 end
 
--- ═══════════════ DECRYPT (XOR + Base64) ═══════════════
-local B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
-
-local function b64decode(data)
-    data = tostring(data):gsub('[^'..B64..'=]', '')
-    return (data:gsub('.', function(x)
-        if x == '=' then return '' end
-        local r, f = '', (B64:find(x) - 1)
-        for i = 6, 1, -1 do r = r .. (f % 2^i - f % 2^(i-1) > 0 and '1' or '0') end
-        return r
-    end):gsub('%d%d%d?%d?%d?%d?%d?%d?', function(x)
-        if #x ~= 8 then return '' end
-        local c = 0
-        for i = 1, 8 do c = c + (x:sub(i, i) == '1' and 2^(8 - i) or 0) end
-        return string.char(c)
-    end))
-end
-
-local function xorStr(data, key)
-    local out = {}
-    for i = 1, #data do
-        local c = data:byte(i)
-        local k = key:byte((i - 1) % #key + 1)
-        out[i] = string.char(bit32.bxor(c, k))
-    end
-    return table.concat(out)
-end
-
--- ถอดรหัส: base64 decode -> xor
-local function decryptMap(blob, key)
-    local ok, res = pcall(function() return xorStr(b64decode(blob), key) end)
-    if ok then return res end
-    return nil
-end
-
--- ดูว่าข้อความดูเหมือน Lua ที่รันได้ไหม
 local function looksLikeLua(src)
     if not src or #src < 10 then return false end
     return LS(src) ~= nil
 end
 
--- คืนโค้ด Lua พร้อมรัน จาก blob (ถอดรหัส หรือ ธรรมดาในโหมดเทส)
-local function resolveSource(blob, key)
-    -- ลองถอดรหัสก่อน
-    if key then
-        local dec = decryptMap(blob, key)
-        if dec and looksLikeLua(dec) then return dec end
-    end
-    -- โหมดเทส: ถ้า blob เป็น Lua ธรรมดาอยู่แล้ว ให้รันตรงๆ
-    if TEST_MODE and looksLikeLua(blob) then
-        return blob
-    end
+local function resolveSource(blob, pw)
+    local ok, dec = pcall(AESDecrypt, blob, pw)
+    if ok and dec and looksLikeLua(dec) then return dec end
+    if TEST_MODE and looksLikeLua(blob) then return blob end
     return nil
 end
 
--- ═══════════════ KEY RE-VALIDATION (กัน bypass) ═══════════════
+local function envClean()
+    if not ANTI_HOOK then return true end
+    local flagged = false
+    local function hookedC(fn)
+        if type(fn) ~= "function" then return true end
+        if iscclosure then
+            local ok, res = pcall(iscclosure, fn)
+            if ok and res == false then return true end
+        end
+        return false
+    end
+    if hookedC(loadstring or load) then flagged = true end
+    pcall(function() if hookedC(game.HttpGet) then flagged = true end end)
+    local bad = { "dumpstring","__loggedstrings","saveinstance","LogHook","HookDump","oh_my_startup" }
+    for _, name in ipairs(bad) do
+        local ok, g = pcall(function() return (getgenv and getgenv()[name]) end)
+        if ok and g ~= nil then flagged = true end
+    end
+    local LSref = loadstring or load
+    if debug and debug.getupvalue and type(LSref) == "function" then
+        local ok, nm = pcall(debug.getupvalue, LSref, 1)
+        if ok and nm ~= nil then flagged = true end
+    end
+    return not flagged
+end
+
 local function keyValid(key)
     if not REQUIRE_KEY then return true end
     if not key or key == "" then return false end
-    if _G.JustHubVerified == key then return true end  -- cache ต่อ session
+    if _G.JustHubVerified == key then return true end
     local ok, result = pcall(function()
         local src = httpGet("https://secure.pandauth.com/pv4/lib")
         if not src then error("no pusl") end
@@ -164,79 +264,61 @@ local function keyValid(key)
     return false
 end
 
--- ═══════════════ FIND GAME ═══════════════
 local gid = tostring(game.GameId)
 local pid = tostring(game.PlaceId)
 local urls = GAMES[gid] or GAMES[pid]
 if type(urls) == "string" then urls = { urls } end
 
--- ═══════════════ PHASE 1: PREFETCH ═══════════════
--- เรียกจากไฟล์ key ก่อนเช็ค key:
---   _G.JustHubPrefetchMode = true
---   task.spawn(function() loadstring(game:HttpGet("GAMELOADER_URL"))() end)
--- โหลด blob (เข้ารหัส) มา cache ไว้ล่วงหน้า — ไม่ต้องมี key เพราะ blob เข้ารหัสอยู่แล้ว
+-- PHASE 1: PREFETCH (blob เข้ารหัสอยู่แล้ว โหลดล่วงหน้าได้ ไม่ต้องมี key)
 if _G.JustHubPrefetchMode and not session then
     _G.JustHubPrefetchMode = nil
     if urls then
         for _, url in ipairs(urls) do
             if fetchCached(url) then break end
         end
-        print(">>> [GAMELOADER] prefetched")
     end
     return true
 end
 
--- ═══════════════ PHASE 2: LOAD ═══════════════
--- ต้องมี session จากไฟล์ key
+-- PHASE 2: LOAD
 if not session or not session.key then
-    warn(">>> [GAMELOADER] NO_SESSION (เรียกตรงไม่ผ่านไฟล์ key)")
     return false, "NO_SESSION"
 end
 
--- validate key ซ้ำกับ server (กัน bypass แบบตั้ง session ปลอม)
+-- เจอ hook = เตะออกทันที
+if not envClean() then
+    kickOut("hook detected")
+end
+
 if not keyValid(session.key) then
-    warn(">>> [GAMELOADER] INVALID_KEY")
     return false, "INVALID_KEY"
 end
 
-local decKey = session.decKey
-if not decKey and not TEST_MODE then
-    warn(">>> [GAMELOADER] NO_DECKEY")
+local pw = session.decKey
+if not pw and not TEST_MODE then
     return false, "NO_DECKEY"
 end
 
-print(">>> [GAMELOADER] GameId =", gid, "| PlaceId =", pid)
-
 if not urls then
-    warn(">>> [GAMELOADER] UNSUPPORTED:", gid, pid)
     return false, "UNSUPPORTED"
 end
 
 local lastReason = "HTTP_FAIL"
-
 for i, url in ipairs(urls) do
-    local t0 = os.clock()
     local blob = fetchCached(url)
-    print(">>> [GAMELOADER] get #" .. i, string.format("%.2fs", os.clock() - t0))
-
     if blob then
-        local src = resolveSource(blob, decKey)
+        -- เช็ค hook อีกรอบก่อนถอด (กัน hook ตอนหลัง)
+        if not envClean() then kickOut("hook detected") end
+        local src = resolveSource(blob, pw)
         if not src then
-            warn(">>> [GAMELOADER] DECRYPT/SYNTAX fail #" .. i)
             lastReason = "SYNTAX"
         else
             local fn, err = LS(src)
             if not fn then
-                warn(">>> [GAMELOADER] SYNTAX:", tostring(err))
                 lastReason = "SYNTAX"
             else
-                local t1 = os.clock()
                 local ok, runErr = pcall(fn)
-                if ok then
-                    print(">>> [GAMELOADER] EXECUTED", string.format("%.2fs", os.clock() - t1))
-                    return true
-                end
-                warn(">>> [GAMELOADER] RUNTIME:", tostring(runErr))
+                if ok then return true end
                 lastReason = "RUNTIME"
             end
         end
@@ -245,5 +327,4 @@ for i, url in ipairs(urls) do
     end
 end
 
-warn(">>> [GAMELOADER] All failed:", lastReason)
 return false, lastReason
