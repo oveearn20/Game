@@ -42,26 +42,34 @@ end
 -- AES-256-CTR decrypt (pure Luau) — matches server-side cryptography lib
 -- usage: local plain = AESDecrypt(base64blob, "Justreally095")
 local function AESDecrypt(b64, password)
-    local bxor, band, floor = bit32.bxor, bit32.band, math.floor
+    local bxor, floor = bit32.bxor, math.floor
+    local schar, tconcat = string.char, table.concat
     local SBOX = {99,124,119,123,242,107,111,197,48,1,103,43,254,215,171,118,202,130,201,125,250,89,71,240,173,212,162,175,156,164,114,192,183,253,147,38,54,63,247,204,52,165,229,241,113,216,49,21,4,199,35,195,24,150,5,154,7,18,128,226,235,39,178,117,9,131,44,26,27,110,90,160,82,59,214,179,41,227,47,132,83,209,0,237,32,252,177,91,106,203,190,57,74,76,88,207,208,239,170,251,67,77,51,133,69,249,2,127,80,60,159,168,81,163,64,143,146,157,56,245,188,182,218,33,16,255,243,210,205,12,19,236,95,151,68,23,196,167,126,61,100,93,25,115,96,129,79,220,34,42,144,136,70,238,184,20,222,94,11,219,224,50,58,10,73,6,36,92,194,211,172,98,145,149,228,121,231,200,55,109,141,213,78,169,108,86,244,234,101,122,174,8,186,120,37,46,28,166,180,198,232,221,116,31,75,189,139,138,112,62,181,102,72,3,246,14,97,53,87,185,134,193,29,158,225,248,152,17,105,217,142,148,155,30,135,233,206,85,40,223,140,161,137,13,191,230,66,104,65,153,45,15,176,84,187,22}
     local RCON = {1,2,4,8,16,32,64,128,27,54,108,216,171,77}
 
-    -- base64 decode
+    -- fast base64 decode (byte-lookup, flush per byte) — ทนไฟล์ใหญ่
     local B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+    local DEC = {}
+    for i = 0, 255 do DEC[i] = -1 end
+    for i = 1, #B64 do DEC[B64:byte(i)] = i - 1 end
     local function b64decode(data)
-        data = tostring(data):gsub('[^'..B64..'=]', '')
-        local out = (data:gsub('.', function(x)
-            if x == '=' then return '' end
-            local r, f = '', (B64:find(x) - 1)
-            for i = 6, 1, -1 do r = r .. (f % 2^i - f % 2^(i-1) > 0 and '1' or '0') end
-            return r
-        end):gsub('%d%d%d?%d?%d?%d?%d?%d?', function(x)
-            if #x ~= 8 then return '' end
-            local c = 0
-            for i = 1, 8 do c = c + (x:sub(i, i) == '1' and 2^(8 - i) or 0) end
-            return string.char(c)
-        end))
-        return out
+        local out = {}
+        local n = 0
+        local bits, nbits = 0, 0
+        for i = 1, #data do
+            local v = DEC[data:byte(i)]
+            if v >= 0 then
+                bits = bits * 64 + v
+                nbits = nbits + 6
+                if nbits >= 8 then
+                    nbits = nbits - 8
+                    n = n + 1
+                    out[n] = schar(floor(bits / (2 ^ nbits)) % 256)
+                    bits = bits % (2 ^ nbits)
+                end
+            end
+        end
+        return tconcat(out)
     end
 
     -- derive 32-byte key
@@ -83,7 +91,6 @@ local function AESDecrypt(b64, password)
         return r
     end
 
-    -- key expansion (Nk=8, Nr=14)
     local Nk, Nr = 8, 14
     local w = {}
     for i = 1, Nk do
@@ -102,7 +109,6 @@ local function AESDecrypt(b64, password)
         local a = w[p - Nk]
         w[p] = { bxor(a[1],t[1]), bxor(a[2],t[2]), bxor(a[3],t[3]), bxor(a[4],t[4]) }
     end
-    -- flatten round keys
     local rk = {}
     local idx = 1
     for p = 1, 4 * (Nr + 1) do
@@ -112,12 +118,9 @@ local function AESDecrypt(b64, password)
     local function encBlock(inp)
         local s = {}
         for i = 1, 16 do s[i] = inp[i] end
-        -- addRoundKey 0
         for i = 1, 16 do s[i] = bxor(s[i], rk[i]) end
         for rnd = 1, Nr do
-            -- subBytes
             for i = 1, 16 do s[i] = SBOX[s[i] + 1] end
-            -- shiftRows
             local o = {}
             for r = 0, 3 do
                 for c = 0, 3 do
@@ -126,7 +129,6 @@ local function AESDecrypt(b64, password)
             end
             s = o
             if rnd ~= Nr then
-                -- mixColumns
                 local m = {}
                 for c = 0, 3 do
                     local b0,b1,b2,b3 = s[4*c+1], s[4*c+2], s[4*c+3], s[4*c+4]
@@ -137,14 +139,12 @@ local function AESDecrypt(b64, password)
                 end
                 s = m
             end
-            -- addRoundKey rnd
             local base = 16 * rnd
             for i = 1, 16 do s[i] = bxor(s[i], rk[base + i]) end
         end
         return s
     end
 
-    -- decode blob
     local blob = b64decode(b64)
     if #blob < 17 then return nil end
     local iv = {}
@@ -159,22 +159,23 @@ local function AESDecrypt(b64, password)
     end
 
     local out = {}
+    local oi = 0
     local pos = 17
     local n = 0
     while n < ctLen do
         local ks = encBlock(iv)
-        local chunk = math.min(16, ctLen - n)
+        local chunk = ctLen - n
+        if chunk > 16 then chunk = 16 end
         for i = 1, chunk do
-            out[#out + 1] = string.char(bxor(blob:byte(pos + i - 1), ks[i]))
+            oi = oi + 1
+            out[oi] = schar(bxor(blob:byte(pos + i - 1), ks[i]))
         end
         pos = pos + chunk
         n = n + chunk
         incCtr()
     end
-    return table.concat(out)
+    return tconcat(out)
 end
-
-
 
 local env     = (getgenv and getgenv()) or _G
 local session = env.JustHubSession
