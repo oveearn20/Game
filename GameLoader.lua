@@ -11,14 +11,33 @@ local function G(file) return BASE .. file end
 local TYPER_TOWN = "https://raw.githubusercontent.com/oveearn20/Game/main/Typer%20town"
 local ANIME_DICE = "https://raw.githubusercontent.com/oveearn20/Game/main/Anime%20dice"
 
-local GAMES = {
-    ["8835283017"]      = { "https://raw.githubusercontent.com/oveearn20/Sometown/main/Sometown" },
-    ["117483759937632"] = { "https://raw.githubusercontent.com/oveearn20/Hunting/main/Hunting" },
-    ["119554426329370"] = { TYPER_TOWN },
-    ["73746968849439"]  = { TYPER_TOWN },
-    ["10708913337"]     = { ANIME_DICE },
-    ["113290951185459"] = { ANIME_DICE },
+-- แต่ละเกม = ชื่อเดียว ใส่ ID ได้หลายตัว (GameId หรือ PlaceId)
+local GAME_LIST = {
+    {
+        name = "Typer Town",
+        ids  = { "119554426329370", "73746968849439" },
+        url  = TYPER_TOWN,
+    },
+    {
+        name = "Anime Dice",
+        ids  = { "10708913337", "113290951185459" },
+        url  = ANIME_DICE,
+    },
+    -- เพิ่มเกมใหม่:
+    -- {
+    --     name = "ชื่อเกม",
+    --     ids  = { "GameId", "PlaceId" },
+    --     url  = "https://raw.githubusercontent.com/oveearn20/Game/main/Games/ชื่อไฟล์",
+    -- },
 }
+
+-- สร้างตารางค้นหาจาก GAME_LIST (ไม่ต้องแก้ส่วนนี้)
+local GAMES = {}
+for _, g in ipairs(GAME_LIST) do
+    for _, id in ipairs(g.ids) do
+        GAMES[id] = { g.url }
+    end
+end
 
 -- AES-256-CTR decrypt (pure Luau) — matches server-side cryptography lib
 -- usage: local plain = AESDecrypt(base64blob, "Justreally095")
@@ -160,13 +179,6 @@ end
 local env     = (getgenv and getgenv()) or _G
 local session = env.JustHubSession
 
-local function kickOut(reason)
-    pcall(function()
-        local p = game:GetService("Players").LocalPlayer
-        p:Kick("\n[JUST HUB] Security: "..tostring(reason).."\nDetected tampering. Session closed.")
-    end)
-    -- freeze ไม่ให้โค้ดเดินต่อ (กันกรณี Kick ถูก hook)
-    while true do task.wait(1e9) end
 end
 
 local function httpGet(url)
