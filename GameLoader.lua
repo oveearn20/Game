@@ -2,7 +2,7 @@ local LS = loadstring or load
 _G.JustHubCache = _G.JustHubCache or {}
 
 local REQUIRE_KEY = true      -- validate key กับ PandaAuth (กัน bypass)
-local ANTI_HOOK   = true      -- เจอ hook/dumper = เตะออกจากเกมทันที
+local ANTI_HOOK   = false     -- ปิด anti-hook (ไม่เตะใคร)
 local TEST_MODE   = true      -- ยอมรับแมพที่ยังเป็น Lua ธรรมดา (ตอน migrate)
 local SERVICE_ID  = "justhubkey"
 
@@ -221,20 +221,7 @@ local function resolveSource(blob, pw)
 end
 
 local function envClean()
-    if not ANTI_HOOK then return true end
-    local flagged = false
-    -- เช็คแค่ร่องรอย "เครื่องมือ dump/log script" ที่คนปกติไม่มี
-    -- (ไม่เช็ค loadstring/HttpGet wrap เพราะ executor ปกติ wrap อยู่แล้ว = false positive)
-    local names = {
-        "__loggedstrings","saveinstance","decompile",
-        "LogHook","HookDump","dumpstring","dumpall",
-    }
-    local g = (getgenv and getgenv()) or {}
-    for _, name in ipairs(names) do
-        local ok, v = pcall(function() return g[name] end)
-        if ok and v ~= nil then flagged = true; break end
-    end
-    return not flagged
+    return true
 end
 
 local function keyValid(key)
@@ -276,11 +263,6 @@ if not session or not session.key then
     return false, "NO_SESSION"
 end
 
--- เจอ hook = เตะออกทันที
-if not envClean() then
-    kickOut("hook detected")
-end
-
 if not keyValid(session.key) then
     return false, "INVALID_KEY"
 end
@@ -298,8 +280,6 @@ local lastReason = "HTTP_FAIL"
 for i, url in ipairs(urls) do
     local blob = fetchCached(url)
     if blob then
-        -- เช็ค hook อีกรอบก่อนถอด (กัน hook ตอนหลัง)
-        if not envClean() then kickOut("hook detected") end
         local src = resolveSource(blob, pw)
         if not src then
             lastReason = "SYNTAX"
