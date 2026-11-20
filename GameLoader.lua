@@ -223,25 +223,16 @@ end
 local function envClean()
     if not ANTI_HOOK then return true end
     local flagged = false
-    local function hookedC(fn)
-        if type(fn) ~= "function" then return true end
-        if iscclosure then
-            local ok, res = pcall(iscclosure, fn)
-            if ok and res == false then return true end
-        end
-        return false
-    end
-    if hookedC(loadstring or load) then flagged = true end
-    pcall(function() if hookedC(game.HttpGet) then flagged = true end end)
-    local bad = { "dumpstring","__loggedstrings","saveinstance","LogHook","HookDump","oh_my_startup" }
-    for _, name in ipairs(bad) do
-        local ok, g = pcall(function() return (getgenv and getgenv()[name]) end)
-        if ok and g ~= nil then flagged = true end
-    end
-    local LSref = loadstring or load
-    if debug and debug.getupvalue and type(LSref) == "function" then
-        local ok, nm = pcall(debug.getupvalue, LSref, 1)
-        if ok and nm ~= nil then flagged = true end
+    -- เช็คแค่ร่องรอย "เครื่องมือ dump/log script" ที่คนปกติไม่มี
+    -- (ไม่เช็ค loadstring/HttpGet wrap เพราะ executor ปกติ wrap อยู่แล้ว = false positive)
+    local names = {
+        "__loggedstrings","saveinstance","decompile",
+        "LogHook","HookDump","dumpstring","dumpall",
+    }
+    local g = (getgenv and getgenv()) or {}
+    for _, name in ipairs(names) do
+        local ok, v = pcall(function() return g[name] end)
+        if ok and v ~= nil then flagged = true; break end
     end
     return not flagged
 end
