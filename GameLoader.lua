@@ -187,8 +187,6 @@ end
 local env     = (getgenv and getgenv()) or _G
 local session = env.JustHubSession
 
-end
-
 local function httpGet(url)
     local methods = {
         function() return game:HttpGet(url, true) end,
@@ -220,7 +218,8 @@ end
 local function fetchCached(url)
     local c = _G.JustHubCache[url]
     if c and isValidBlob(c) then return c end
-    local src = httpGet(url)
+    local fresh = url .. "?nocache=" .. tostring(os.time()) .. tostring(math.random(1,999999))
+    local src = httpGet(fresh)
     if src and isValidBlob(src) then
         _G.JustHubCache[url] = src
         return src
@@ -302,7 +301,7 @@ for i, url in ipairs(urls) do
     if blob then
         local src = resolveSource(blob, pw)
         if not src then
-            lastReason = "SYNTAX"
+            lastReason = "DECRYPT"
         else
             local fn, err = LS(src)
             if not fn then
