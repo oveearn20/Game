@@ -47,15 +47,24 @@ local function AESDecrypt(b64, password)
     local SBOX = {99,124,119,123,242,107,111,197,48,1,103,43,254,215,171,118,202,130,201,125,250,89,71,240,173,212,162,175,156,164,114,192,183,253,147,38,54,63,247,204,52,165,229,241,113,216,49,21,4,199,35,195,24,150,5,154,7,18,128,226,235,39,178,117,9,131,44,26,27,110,90,160,82,59,214,179,41,227,47,132,83,209,0,237,32,252,177,91,106,203,190,57,74,76,88,207,208,239,170,251,67,77,51,133,69,249,2,127,80,60,159,168,81,163,64,143,146,157,56,245,188,182,218,33,16,255,243,210,205,12,19,236,95,151,68,23,196,167,126,61,100,93,25,115,96,129,79,220,34,42,144,136,70,238,184,20,222,94,11,219,224,50,58,10,73,6,36,92,194,211,172,98,145,149,228,121,231,200,55,109,141,213,78,169,108,86,244,234,101,122,174,8,186,120,37,46,28,166,180,198,232,221,116,31,75,189,139,138,112,62,181,102,72,3,246,14,97,53,87,185,134,193,29,158,225,248,152,17,105,217,142,148,155,30,135,233,206,85,40,223,140,161,137,13,191,230,66,104,65,153,45,15,176,84,187,22}
     local RCON = {1,2,4,8,16,32,64,128,27,54,108,216,171,77}
 
-    -- fast base64 decode (byte-lookup, flush per byte) — ทนไฟล์ใหญ่
+    -- precompute GF(2^8) multiply-by-2 and -3 tables (speed)
+    local MUL2, MUL3 = {}, {}
+    for a = 0, 255 do
+        local d = a * 2
+        if d >= 256 then d = bxor(d % 256, 0x1B) end
+        MUL2[a] = d
+        MUL3[a] = bxor(d, a)
+    end
+
+    -- fast base64 decode (yields to avoid script timeout)
     local B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
     local DEC = {}
     for i = 0, 255 do DEC[i] = -1 end
     for i = 1, #B64 do DEC[B64:byte(i)] = i - 1 end
     local function b64decode(data)
-        local out = {}
-        local n = 0
+        local out, n = {}, 0
         local bits, nbits = 0, 0
+        local tick = 0
         for i = 1, #data do
             local v = DEC[data:byte(i)]
             if v >= 0 then
@@ -68,11 +77,12 @@ local function AESDecrypt(b64, password)
                     bits = bits % (2 ^ nbits)
                 end
             end
+            tick = tick + 1
+            if tick >= 60000 then tick = 0; if task then task.wait() end end
         end
         return tconcat(out)
     end
 
-    -- derive 32-byte key
     local key = password
     while #key < 32 do key = key .. password end
     key = key:sub(1, 32)
@@ -93,9 +103,7 @@ local function AESDecrypt(b64, password)
 
     local Nk, Nr = 8, 14
     local w = {}
-    for i = 1, Nk do
-        w[i] = { kb[4*(i-1)+1], kb[4*(i-1)+2], kb[4*(i-1)+3], kb[4*(i-1)+4] }
-    end
+    for i = 1, Nk do w[i] = { kb[4*(i-1)+1], kb[4*(i-1)+2], kb[4*(i-1)+3], kb[4*(i-1)+4] } end
     for p = Nk + 1, 4 * (Nr + 1) do
         local t = { w[p-1][1], w[p-1][2], w[p-1][3], w[p-1][4] }
         local m = (p - 1) % Nk
@@ -115,29 +123,27 @@ local function AESDecrypt(b64, password)
         for j = 1, 4 do rk[idx] = w[p][j]; idx = idx + 1 end
     end
 
+    local s = {}
     local function encBlock(inp)
-        local s = {}
-        for i = 1, 16 do s[i] = inp[i] end
-        for i = 1, 16 do s[i] = bxor(s[i], rk[i]) end
+        for i = 1, 16 do s[i] = bxor(inp[i], rk[i]) end
         for rnd = 1, Nr do
             for i = 1, 16 do s[i] = SBOX[s[i] + 1] end
-            local o = {}
-            for r = 0, 3 do
-                for c = 0, 3 do
-                    o[r + 4*c + 1] = s[r + 4*((c + r) % 4) + 1]
-                end
-            end
-            s = o
+            -- shiftRows (in place via temp)
+            local s2,s3,s4,s5,s6,s7,s8,s9,s10,s11,s12,s13,s14,s15,s16 =
+                s[2],s[3],s[4],s[5],s[6],s[7],s[8],s[9],s[10],s[11],s[12],s[13],s[14],s[15],s[16]
+            -- row1 (idx 2,6,10,14) shift1 ; row2 (3,7,11,15) shift2 ; row3 (4,8,12,16) shift3
+            s[2]=s6;  s[6]=s10; s[10]=s14; s[14]=s2
+            s[3]=s11; s[7]=s15; s[11]=s3;  s[15]=s7
+            s[4]=s16; s[8]=s4;  s[12]=s8;  s[16]=s12
             if rnd ~= Nr then
-                local m = {}
                 for c = 0, 3 do
-                    local b0,b1,b2,b3 = s[4*c+1], s[4*c+2], s[4*c+3], s[4*c+4]
-                    m[4*c+1] = bxor(bxor(gmul(b0,2), gmul(b1,3)), bxor(b2, b3))
-                    m[4*c+2] = bxor(bxor(b0, gmul(b1,2)), bxor(gmul(b2,3), b3))
-                    m[4*c+3] = bxor(bxor(b0, b1), bxor(gmul(b2,2), gmul(b3,3)))
-                    m[4*c+4] = bxor(bxor(gmul(b0,3), b1), bxor(b2, gmul(b3,2)))
+                    local i0,i1,i2,i3 = 4*c+1,4*c+2,4*c+3,4*c+4
+                    local b0,b1,b2,b3 = s[i0],s[i1],s[i2],s[i3]
+                    s[i0] = bxor(bxor(MUL2[b0], MUL3[b1]), bxor(b2, b3))
+                    s[i1] = bxor(bxor(b0, MUL2[b1]), bxor(MUL3[b2], b3))
+                    s[i2] = bxor(bxor(b0, b1), bxor(MUL2[b2], MUL3[b3]))
+                    s[i3] = bxor(bxor(MUL3[b0], b1), bxor(b2, MUL2[b3]))
                 end
-                s = m
             end
             local base = 16 * rnd
             for i = 1, 16 do s[i] = bxor(s[i], rk[base + i]) end
@@ -158,10 +164,9 @@ local function AESDecrypt(b64, password)
         end
     end
 
-    local out = {}
-    local oi = 0
-    local pos = 17
-    local n = 0
+    local out, oi = {}, 0
+    local pos, n = 17, 0
+    local tick = 0
     while n < ctLen do
         local ks = encBlock(iv)
         local chunk = ctLen - n
@@ -173,6 +178,8 @@ local function AESDecrypt(b64, password)
         pos = pos + chunk
         n = n + chunk
         incCtr()
+        tick = tick + 1
+        if tick >= 1500 then tick = 0; if task then task.wait() end end
     end
     return tconcat(out)
 end
