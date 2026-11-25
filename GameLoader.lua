@@ -40,7 +40,6 @@ for _, g in ipairs(GAME_LIST) do
 end
 
 -- AES-256-CTR decrypt (pure Luau) — matches server-side cryptography lib
--- usage: local plain = AESDecrypt(base64blob, "Justreally095")
 local function AESDecrypt(b64, password)
     local bxor, floor = bit32.bxor, math.floor
     local schar, tconcat = string.char, table.concat
